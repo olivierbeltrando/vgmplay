@@ -324,6 +324,7 @@ static int LoadConfigDialogInfo(HWND hWndDlg)
 	CheckDlgButton(CfgTags, TrimWhitespcCheck, Options.TrimWhitespc);
 	CheckDlgButton(CfgTags, StdSeparatorsCheck, Options.StdSeparators);
 	CheckDlgButton(CfgTags, TagFallbackCheck, Options.TagFallback);
+	CheckDlgButton(CfgTags, NoInfoCacheCheck, Options.NoInfoCache);
 	//CheckDlgButton(CfgTags, cbTagsStandardiseDates, TagsStandardiseDates);
 	
 	SetDlgItemInt(CfgTags, MLTypeText, Options.MLFileType, FALSE);
@@ -629,6 +630,9 @@ BOOL CALLBACK CfgDlgTagsProc(HWND hWndDlg, UINT wMessage, WPARAM wParam, LPARAM 
 		case TagFallbackCheck:
 			Options.TagFallback = CHECK2BOOL(CfgTags, TagFallbackCheck);
 			break;
+		case NoInfoCacheCheck:
+			Options.NoInfoCache = CHECK2BOOL(CfgTags, NoInfoCacheCheck);
+			break;
 		}
 		break;
 	case WM_NOTIFY:
@@ -920,7 +924,6 @@ static void ShowMutingCheckBoxes(UINT8 ChipID, UINT8 ChipSet)
 		break;
 	case 0x15:	// Multi PCM
 		ChnCount = 28;
-		EnableChk &= ! ChipSet;
 		break;
 	case 0x16:	// UPD7759
 		ChnCount = 0;
@@ -1194,7 +1197,8 @@ static void ShowOptPanBoxes(UINT8 ChipID, UINT8 ChipSet)
 		break;
 	case 0x02:	// YM2612
 		MultiCore = true;
-		CoreName[0x01] = "Gens";
+		CoreName[0x01] = "Nuked OPN2";
+		//CoreName[0x02] = "Gens";
 		break;
 	case 0x06:	// YM2203
 	case 0x07:	// YM2608
@@ -1239,8 +1243,13 @@ static void ShowOptPanBoxes(UINT8 ChipID, UINT8 ChipSet)
 		CoreName[0x00] = "Ootake";
 		CoreName[0x01] = "MAME";
 		break;
-	case 0x27:
-		CoreName[0x00] = "VGMPlay";
+	case 0x1F:	// QSound
+		MultiCore = true;
+		CoreName[0x00] = "superctr";
+		CoreName[0x01] = "MAME";
+		break;
+	case 0x27:	// C352
+		CoreName[0x00] = "superctr";
 		break;
 	default:
 		ChnCount = 0;

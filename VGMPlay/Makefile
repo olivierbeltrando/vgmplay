@@ -9,54 +9,83 @@
 
 # (notice that you can just pass these as arguments when running make)
 
-# Uncomment if you build on Windows using MinGW.
-#WINDOWS = 1
+# set to 1 if you build on Windows using MinGW.
+ifndef WINDOWS
+WINDOWS = 0
+endif
 
-# Uncomment if you build on Mac OSX
-#MACOSX = 1
+# set to 1 if you build on Mac OSX
+ifndef MACOSX
+MACOSX = 0
+endif
 
-# disable Hardware OPL Support
-DISABLE_HWOPL_SUPPORT = 1
-
-# Uncomment if you want to use libao instead of OSS for sound streaming under Linux
-USE_LIBAO = 1
-
-# Uncomment for debug builds
-#DEBUG = 1
-
-# Uncomment for swprintf fix on older MinGW versions
-#OLD_SWPRINTF = 1
-
-# Byte Order
-#   0 = undefined (use endian-safe code, might be slightly slower)
-#   1 = Little Endian (Intel)
-#   2 = Big Endian (Motorola)
-BYTE_ORDER = 1
-
-
-ifdef MACOSX
-ifndef USE_LIBAO
+ifeq ($(WINDOWS), 1)
+# no libAO for Windows
+USE_LIBAO = 0
+endif
+ifeq ($(MACOSX), 1)
 # Mac OSX requires libAO
 USE_LIBAO = 1
 endif
+
+# disable Hardware OPL Support [enabled by default]
+ifndef DISABLE_HWOPL_SUPPORT
+DISABLE_HWOPL_SUPPORT = 1
+endif
+
+# set to 1 if you want to use libao instead of OSS for sound streaming under Linux [enabled by default]
+ifndef USE_LIBAO
+USE_LIBAO = 1
+endif
+
+# set to 1 for debug builds
+ifndef DEBUG
+DEBUG = 0
+endif
+
+# set to 1 for swprintf fix on older MinGW versions
+ifndef OLD_SWPRINTF
+OLD_SWPRINTF = 0
+endif
+
+# Byte Order
+#   0 = undefined (use endian-safe code, might be slightly slower)
+#   1 = Little Endian (Intel) [default]
+#   2 = Big Endian (Motorola)
+ifndef BYTE_ORDER
+BYTE_ORDER = 1
+endif
+
+# set to 0 to compile without dbus support on linux
+ifndef USE_DBUS
+USE_DBUS = 1
+endif
+
+ifeq ($(WINDOWS), 1)
+USE_DBUS = 0
+endif
+ifeq ($(MACOSX), 1)
+USE_DBUS = 0
 endif
 
 CC = gcc
+ifndef PREFIX
 PREFIX = /usr/local
+#PREFIX = $(HOME)/.local
+endif
 MANPREFIX = $(PREFIX)/share/man
 
 # -- VGMPlay specific Compile Flags --
 MAINFLAGS := -DCONSOLE_MODE -DADDITIONAL_FORMATS -DSET_CONSOLE_TITLE
-ifdef WINDOWS
+ifeq ($(WINDOWS), 1)
 # MinGW defines __WINDOWS__, Visual Studio defines WIN32
 MAINFLAGS += -DWIN32
-ifdef OLD_SWPRINTF
+endif
+ifeq ($(OLD_SWPRINTF), 1)
 MAINFLAGS += -DOLD_SWPRINTF
 endif
-else
-ifdef USE_LIBAO
+ifeq ($(USE_LIBAO), 1)
 MAINFLAGS += -DUSE_LIBAO
-endif
 endif
 EMUFLAGS := -DENABLE_ALL_CORES
 
@@ -75,40 +104,45 @@ else
 endif
 endif
 
-ifdef DISABLE_HWOPL_SUPPORT
+ifeq ($(DISABLE_HWOPL_SUPPORT), 1)
 MAINFLAGS += -DDISABLE_HW_SUPPORT
 endif
 
 
+ifeq ($(DEBUG), 0)
 # -- General Compile Flags --
-ifdef DEBUG
-CFLAGS := -g $(CFLAGS)
+CFLAGS := -O3 -g0 -Wno-unused-variable -Wno-unused-value -Wno-unused-but-set-variable $(CFLAGS)
 else
-CFLAGS := -O3 -g0 $(CFLAGS)
+CFLAGS := -g -Wall $(CFLAGS)
 endif
-#CFLAGS += -Wall
-CFLAGS += -Wno-unused-variable -Wno-unused-value -Wno-unused-but-set-variable
 # libm (math library) and libz (zlib)
 LDFLAGS := -lm -lz $(LDFLAGS)
 
-ifdef WINDOWS
+ifeq ($(WINDOWS), 1)
 # for Windows, add kernel32 and winmm (Multimedia APIs)
 LDFLAGS += -lkernel32 -lwinmm
-else
-
-ifdef MACOSX
+else	# if UNIX
+ifeq ($(MACOSX), 1)
 # You might want to include additional paths using -I/some/path here,
 # in case some libraries (like libao) can't be found.
 #CFLAGS += -I/some/path
 else
 # for Linux, add librt (clock stuff) and libpthread (threads)
 LDFLAGS += -lrt -lpthread -pthread
+
+#DBus
+ifeq ($(USE_DBUS), 1)
+CFLAGS += $(shell pkg-config --cflags dbus-1) -std=c99
+LDFLAGS += $(shell pkg-config --libs dbus-1)
+MAINFLAGS += -DUSE_DBUS
+endif
+
 endif
 MAINFLAGS += -pthread -DSHARE_PREFIX=\"$(PREFIX)\"
-
-ifdef USE_LIBAO
-LDFLAGS += -lao
 endif
+
+ifeq ($(USE_LIBAO), 1)
+LDFLAGS += -lao
 endif
 
 # add Library Path, if defined
@@ -129,8 +163,8 @@ MAINOBJS = \
 	$(OBJ)/VGMPlay_AddFmts.o \
 	$(OBJ)/Stream.o \
 	$(OBJ)/ChipMapper.o
-ifdef WINDOWS
-ifndef DISABLE_HWOPL_SUPPORT
+ifeq ($(WINDOWS), 1)
+ifeq ($(DISABLE_HWOPL_SUPPORT), 0)
 MAINOBJS += $(OBJ)/pt_ioctl.o
 endif
 endif
@@ -178,7 +212,9 @@ EMUOBJS = \
 	$(EMUOBJ)/panning.o \
 	$(EMUOBJ)/pokey.o \
 	$(EMUOBJ)/pwm.o \
-	$(EMUOBJ)/qsound.o \
+	$(EMUOBJ)/qsound_ctr.o \
+	$(EMUOBJ)/qsound_mame.o \
+	$(EMUOBJ)/qsound_intf.o \
 	$(EMUOBJ)/rf5c68.o \
 	$(EMUOBJ)/saa1099.o \
 	$(EMUOBJ)/segapcm.o \
@@ -195,6 +231,7 @@ EMUOBJS = \
 	$(EMUOBJ)/ym2151.o \
 	$(EMUOBJ)/ym2413.o \
 	$(EMUOBJ)/ym2612.o \
+	$(EMUOBJ)/ym3438.o \
 	$(EMUOBJ)/ymdeltat.o \
 	$(EMUOBJ)/ymf262.o \
 	$(EMUOBJ)/ymf271.o \
@@ -206,6 +243,15 @@ EMUOBJS = \
 	$(EMUOBJ)/ym2413_opl.o
 VGMPLAY_OBJS = \
 	$(OBJ)/VGMPlayUI.o
+ 
+ifeq ($(USE_DBUS), 1)
+	VGMPLAY_OBJS += $(OBJ)/dbus.o
+else ifeq ($(WINDOWS), 1)
+	VGMPLAY_OBJS += $(OBJ)/mmkeys_Win.o $(OBJ)/dbus_stub.o
+else
+	VGMPLAY_OBJS += $(OBJ)/mmkeys_stub.o $(OBJ)/dbus_stub.o
+endif
+
 VGM2PCM_OBJS = \
 	$(OBJ)/vgm2pcm.o
 VGM2WAV_OBJS = \
@@ -216,6 +262,13 @@ EXTRA_OBJS = $(VGMPLAY_OBJS) $(VGM2PCM_OBJS) $(VGM2WAV_OBJS)
 all:	vgmplay vgm2pcm vgm2wav
 
 vgmplay:	$(EMUOBJS) $(MAINOBJS) $(VGMPLAY_OBJS)
+ifneq ($(WINDOWS), 1)
+ifneq ($(MACOSX), 1)
+	@echo Generating xdg desktop entry
+	@cp xdg/vgmplay.desktop.in xdg/vgmplay.desktop
+	@sed -i "s/@BIN_PATH@/$(subst /,\/,$(DESTDIR)$(PREFIX)/bin/)/" xdg/vgmplay.desktop
+endif
+endif
 	@echo Linking vgmplay ...
 	@$(CC) $(VGMPLAY_OBJS) $(MAINOBJS) $(EMUOBJS) $(LDFLAGS) -o vgmplay
 	@echo Done.
@@ -243,6 +296,7 @@ $(OBJ)/%.o:	$(SRC)/%.c
 	@$(CC) $(CFLAGS) $(MAINFLAGS) -c $< -o $@
 
 clean:
+	@rm -f xdg/vgmplay.desktop
 	@echo Deleting object files ...
 	@rm -f $(MAINOBJS) $(EMUOBJS) $(EXTRA_OBJS)
 	@echo Deleting executable files ...
@@ -252,10 +306,22 @@ clean:
 # Thanks to ZekeSulastin and nextvolume for the install and uninstall routines.
 install:	vgmplay
 	install -m 755 vgmplay $(DESTDIR)$(PREFIX)/bin/vgmplay
+	install -m 755 vgm2pcm $(DESTDIR)$(PREFIX)/bin/vgm2pcm
+	install -m 755 vgm2wav $(DESTDIR)$(PREFIX)/bin/vgm2wav
 	mkdir -m 755 -p $(DESTDIR)$(MANPREFIX)/man1
 	install -m 644 vgmplay.1 $(DESTDIR)$(MANPREFIX)/man1/vgmplay.1
 	mkdir -m 755 -p $(DESTDIR)$(PREFIX)/share/vgmplay
 	install -m 644 VGMPlay.ini $(DESTDIR)$(PREFIX)/share/vgmplay/vgmplay.ini
+ifneq ($(WINDOWS), 1)
+ifneq ($(MACOSX), 1)
+	xdg-icon-resource install --novendor --size 128 xdg/icons/vgmplay-128.png vgmplay
+	xdg-icon-resource install --novendor --size 64 xdg/icons/vgmplay-64.png vgmplay
+	xdg-icon-resource install --novendor --size 32 xdg/icons/vgmplay-32.png vgmplay
+	xdg-icon-resource install --novendor --size 16 xdg/icons/vgmplay-16.png vgmplay
+	xdg-mime install --novendor xdg/vgmplay-mime.xml
+	xdg-desktop-menu install --novendor xdg/vgmplay.desktop
+endif
+endif
 
 # install ROMs
 rom_install:
@@ -268,6 +334,8 @@ play_install:	install
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/vgmplay
+	rm -f $(DESTDIR)$(PREFIX)/bin/vgm2pcm
+	rm -f $(DESTDIR)$(PREFIX)/bin/vgm2wav
 	rm -f $(DESTDIR)$(PREFIX)/bin/vgm-player
 	rm -f $(DESTDIR)$(MANPREFIX)/man1/vgmplay.1
 	rm -rf $(DESTDIR)$(PREFIX)/share/vgmplay

@@ -2,7 +2,7 @@
 //
 
 // Thanks to nextvolume for NetBSD support
-
+#define _DEFAULT_SOURCE
 #include <stdio.h>
 #include "stdbool.h"
 #include <stdlib.h>
@@ -16,7 +16,7 @@
 #include <fcntl.h>
 #ifdef __NetBSD__
 #include <sys/audioio.h>
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__OpenBSD__)
 // nothing
 #else
 #include <linux/soundcard.h>

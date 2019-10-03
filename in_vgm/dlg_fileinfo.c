@@ -25,6 +25,7 @@ typedef struct fileinfo_data
 	wchar_t* FileName;
 	bool ForceReload;
 	
+	FILETIME FileTime;
 	UINT32 FileSize;
 	VGM_HEADER Head;
 	GD3_TAG Tag;
@@ -238,14 +239,33 @@ static bool LoadInfoA(const char* FileName, FINF_DATA* FileInf)
 
 static bool LoadInfoW(const wchar_t* FileName, FINF_DATA* FileInf)
 {
+	HANDLE hFile;
+	FILETIME fileWrtTime;
 	VGM_HEADER* FH;
 	UINT32 StrSize;
 	INT32 TempSLng;
 	
+	hFile = CreateFileW(FileName, 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
+						NULL, OPEN_EXISTING, 0, NULL);
+	if (hFile != INVALID_HANDLE_VALUE)
+	{
+		GetFileTime(hFile, NULL, NULL, &fileWrtTime);
+		CloseHandle(hFile);	hFile = NULL;
+	}
+	else
+	{
+		fileWrtTime.dwLowDateTime = 0x00;
+		fileWrtTime.dwHighDateTime = 0x00;
+	}
+	
 	if (! FileInf->ForceReload && ! Options.NoInfoCache)
 	{
 		if (FileInf->FileName != NULL && ! _wcsicmp(FileInf->FileName, FileName))
-			return true;	// I just loaded that file.
+		{
+			// We just loaded that file.
+			if (CompareFileTime(&fileWrtTime, &FileInf->FileTime) == 0)
+				return true;	// The file wasn't changed, so don't reload.
+		}
 	}
 	FileInf->ForceReload = false;
 	
@@ -268,6 +288,7 @@ static bool LoadInfoW(const wchar_t* FileName, FINF_DATA* FileInf)
 			
 			// copy all info from PlayVGMInfo to current structure
 			// (advanced caching) ;)
+			FileInf->FileTime = PlayVGMInfo.FileTime;
 			FileInf->FileSize = PlayVGMInfo.FileSize;
 			FileInf->Head = PlayVGMInfo.Head;
 			CopyTagData(&FileInf->Tag, &PlayVGMInfo.Tag);
@@ -292,6 +313,8 @@ static bool LoadInfoW(const wchar_t* FileName, FINF_DATA* FileInf)
 	
 	if (! FileInf->FileSize)
 	{
+		FileInf->FileTime.dwLowDateTime = 0x00;
+		FileInf->FileTime.dwHighDateTime = 0x00;
 		FileInf->FileSize = 0x00;
 		memset(&FileInf->Head, 0x00, sizeof(VGM_HEADER));
 		memset(&FileInf->Tag, 0x00, sizeof(GD3_TAG));
@@ -310,6 +333,7 @@ static bool LoadInfoW(const wchar_t* FileName, FINF_DATA* FileInf)
 			wcscpy(FileInf->Tag.strNotes, L"File invalid!");
 		return false;
 	}
+	FileInf->FileTime = fileWrtTime;
 	
 	FH = &FileInf->Head;
 	FileInf->TrackLen = CalcSampleMSecExt(FH->lngTotalSamples, 0x02, FH);
@@ -640,6 +664,8 @@ UINT32 FormatVGMTag(const UINT32 BufLen, in_char* Buffer, GD3_TAG* FileTag, VGM_
 					FormatStr ++;
 				}
 				TagStr = GetTagStringEngJap(TagStrE, TagStrJ, TempFlag);
+				if (TagStr == NULL)
+					TagStr = L"";
 #ifndef UNICODE_INPUT_PLUGIN
 				CnvBytes = WideCharToMultiByte(CP_THREAD_ACP, 0x00, TagStr, -1, CurBuf,
 												BufEnd - CurBuf, NULL, NULL);
@@ -1218,8 +1244,10 @@ void DisplayTagString(HWND hWndDlg, int DlgItem, const wchar_t* TextEng,
 	const wchar_t* Text;
 	BOOL RetVal;
 	
-	//Text = GetTagStringEngJap(TextEng, TextJap, LangMode);
-	Text = LangMode ? TextJap : TextEng;
+	if (Options.TagFallback)
+		Text = GetTagStringEngJap(TextEng, TextJap, LangMode);
+	else
+		Text = LangMode ? TextJap : TextEng;
 	if (Text == NULL)
 	{
 		RetVal = SetDlgItemTextA(hWndDlg, DlgItem, "");
@@ -1383,6 +1411,13 @@ DllExport int winampGetExtendedFileInfoW(const wchar_t* wfilename, const char* m
 	bool RetVal;
 	
 	RetVal = GetExtendedFileInfoW(wfilename, metadata, ret, retlen);
+#if 0
+	{
+		wchar_t MsgStr[MAX_PATH * 2];
+		swprintf(MsgStr, L"file: %s\nMetadata: %hs\nResult: %ls", wfilename, metadata, ret);
+		MessageBoxW(NULL, MsgStr, L"GetExtFileInfoW", MB_ICONINFORMATION | MB_OK);
+	}
+#endif
 	
 	return RetVal;
 }
@@ -1414,6 +1449,13 @@ DllExport int winampGetExtendedFileInfo(const char* filename, const char* metada
 	
 	free(FileNameW);
 	free(wRetStr);
+#if 0
+	{
+		char MsgStr[MAX_PATH * 2];
+		sprintf(MsgStr, "file: %s\nMetadata: %s\nResult: %s", filename, metadata, ret);
+		MessageBoxA(NULL, MsgStr, "GetExtFileInfoA", MB_ICONINFORMATION | MB_OK);
+	}
+#endif
 	
 	return RetVal;
 }

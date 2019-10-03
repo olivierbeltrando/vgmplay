@@ -4,6 +4,7 @@
 //		 if linked to msvcrt.lib, the following project setting is important:
 //		 C/C++ -> Code Generation -> Runtime libraries: Multithreaded DLL
 
+#define _DEFAULT_SOURCE
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -22,6 +23,8 @@
 #include <termios.h>
 #include <unistd.h>	// for STDIN_FILENO and usleep()
 #include <sys/time.h>	// for struct timeval in _kbhit()
+#include <signal.h> // for signal()
+#include <sys/select.h> // for select()
 
 #define	Sleep(msec)	usleep(msec * 1000)
 #define _vsnwprintf	vswprintf
@@ -34,6 +37,8 @@
 #include "Stream.h"
 #include "VGMPlay.h"
 #include "VGMPlay_Intf.h"
+#include "mmkeys.h"
+#include "dbus.h"
 
 #ifdef XMAS_EXTRA
 #include "XMasFiles/XMasBonus.h"
@@ -68,9 +73,9 @@ void WaveOutLinuxCallBack(void);
 int main(int argc, char* argv[]);
 static void RemoveNewLines(char* String);
 static void RemoveQuotationMarks(char* String);
-static char* GetLastDirSeparator(const char* FilePath);
+char* GetLastDirSeparator(const char* FilePath);
 static bool IsAbsolutePath(const char* FilePath);
-static char* GetFileExtention(const char* FilePath);
+static char* GetFileExtension(const char* FilePath);
 static void StandardizeDirSeparators(char* FilePath);
 #ifdef WIN32
 static void WinNT_Check(void);
@@ -99,9 +104,10 @@ extern bool OpenOtherFile(const char* FileName);
 
 static void wprintc(const wchar_t* format, ...);
 static void PrintChipStr(UINT8 ChipID, UINT8 SubType, UINT32 Clock);
-static const wchar_t* GetTagStrEJ(const wchar_t* EngTag, const wchar_t* JapTag);
+const wchar_t* GetTagStrEJ(const wchar_t* EngTag, const wchar_t* JapTag);
 static void ShowVGMTag(void);
 
+static void MMKey_Event(UINT8 event);
 static void PlayVGM_UI(void);
 INLINE INT8 sign(double Value);
 INLINE long int Round(double Value);
@@ -133,6 +139,7 @@ static UINT8 LogToWave;
 extern bool PauseEmulate;
 extern bool DoubleSSGVol;
 static UINT16 ForceAudioBuf;
+static UINT8 OutputDevID;
 
 extern UINT8 ResampleMode;	// 00 - HQ both, 01 - LQ downsampling, 02 - LQ both
 extern UINT8 CHIP_SAMPLING_MODE;
@@ -144,6 +151,7 @@ extern bool FMForce;
 //extern bool FMAccurate;
 extern bool FMBreakFade;
 extern float FMVol;
+extern bool FMOPL2Pan;
 
 extern CHIPS_OPTION ChipOpts[0x02];
 
@@ -164,16 +172,18 @@ extern char* AppPaths[8];
 static char AppPathBuffer[MAX_PATH * 2];
 
 static char PLFileBase[MAX_PATH];
-static char PLFileName[MAX_PATH];
-static UINT32 PLFileCount;
+char PLFileName[MAX_PATH];
+UINT32 PLFileCount;
 static char** PlayListFile;
-static UINT32 CurPLFile;
+UINT32 CurPLFile;
 static UINT8 NextPLCmd;
-static UINT8 PLMode;	// set to 1 to show Playlist text
+UINT8 PLMode;	// set to 1 to show Playlist text
 static bool FirstInit;
 extern bool AutoStopSkip;
 
-static char VgmFileName[MAX_PATH];
+static UINT8 lastMMEvent = 0x00;
+
+char VgmFileName[MAX_PATH];
 static UINT8 FileMode;
 extern VGM_HEADER VGMHead;
 extern UINT32 VGMDataLen;
@@ -213,6 +223,7 @@ extern bool ResetPBTimer;
 static struct termios oldterm;
 static bool termmode;
 #endif
+static volatile bool sigint = false;
 
 UINT8 CmdList[0x100];
 
@@ -223,6 +234,30 @@ extern UINT16 Last95Max;	// for optvgm debugging
 extern UINT32 Last95Freq;	// for optvgm debugging
 
 static bool PrintMSHours;
+
+#ifdef WIN32
+static BOOL WINAPI signal_handler(DWORD dwCtrlType)
+{
+	switch(dwCtrlType)
+	{
+	case CTRL_C_EVENT:		// Ctrl + C
+	case CTRL_CLOSE_EVENT:	// close console window via X button
+	case CTRL_BREAK_EVENT:	// Ctrl + Break
+		sigint = true;
+		return TRUE;
+	case CTRL_LOGOFF_EVENT:
+	case CTRL_SHUTDOWN_EVENT:
+		return FALSE;
+	}
+	return FALSE;
+}
+#else
+static void signal_handler(int signal)
+{
+	if(signal == SIGINT)
+		sigint = true;
+}
+#endif
 
 int main(int argc, char* argv[])
 {
@@ -246,6 +281,9 @@ int main(int argc, char* argv[])
 #ifndef WIN32
 	tcgetattr(STDIN_FILENO, &oldterm);
 	termmode = false;
+	signal(SIGINT, signal_handler);
+#else
+	SetConsoleCtrlHandler(signal_handler, TRUE);
 #endif
 	
 	if (argc > 1)
@@ -346,15 +384,27 @@ int main(int argc, char* argv[])
 	
 	ReadOptions(AppName);
 	VGMPlay_Init2();
+
+	MultimediaKeyHook_Init();
+	MultimediaKeyHook_SetCallback(&MMKey_Event);
 	
 	ErrRet = 0;
 	argbase = 0x01;
-	if (argc >= argbase + 0x01)
+	while(argbase < argc)
 	{
 		if (! strnicmp_u(argv[argbase], "-LogSound:", 10))
 		{
 			LogToWave = (UINT8)strtoul(argv[argbase] + 10, NULL, 0);
 			argbase ++;
+		}
+		else if (! strnicmp_u(argv[argbase], "-DeviceId:", 10))
+		{
+			OutputDevID = (UINT8)strtoul(argv[argbase] + 10, NULL, 0);
+			argbase ++;
+		}
+		else
+		{
+			break;
 		}
 	}
 	
@@ -403,7 +453,32 @@ int main(int argc, char* argv[])
 		//	Debug build:	Dynamite D³x [tag display wrong]
 		//	Release build:	Dynamite D³x [tag display wrong]
 #else
-		StrPtr = fgets(VgmFileName, MAX_PATH, stdin);
+		fflush(stdout);
+		while(1)
+		{
+			fd_set fds;
+			FD_ZERO(&fds);
+			FD_SET(fileno(stdin), &fds);
+			struct timeval tv = {0, 10};
+			int sel_ret = select(1, &fds, NULL, NULL, &tv);
+			if(sel_ret == -1)
+				break;
+			else if(!sel_ret)
+			{
+				DBus_ReadWriteDispatch();
+				// If ^C has been pressed, quit immediately
+				if(sigint)
+				{
+					printf("\n");
+					break;
+				}
+			}
+			else
+			{
+				StrPtr = fgets(VgmFileName, MAX_PATH, stdin);
+				break;
+			}
+		}
 		if (StrPtr == NULL)
 			VgmFileName[0] = '\0';
 #endif
@@ -460,12 +535,13 @@ int main(int argc, char* argv[])
 	
 	FirstInit = true;
 	StreamStarted = false;
-	FileExt = GetFileExtention(VgmFileName);
+	FileExt = GetFileExtension(VgmFileName);
 	if (FileExt == NULL || stricmp_u(FileExt, "m3u"))
 		PLMode = 0x00;
 	else
 		PLMode = 0x01;
-	
+
+	lastMMEvent = 0x00;
 	if (! PLMode)
 	{
 		PLFileCount = 0x00;
@@ -505,16 +581,13 @@ int main(int argc, char* argv[])
 		
 		for (CurPLFile = 0x00; CurPLFile < PLFileCount; CurPLFile ++)
 		{
-			if (PLMode)
-			{
-				cls();
-				printf(APP_NAME);
-				printf("\n----------\n");
-				printf("\nPlaylist File:\t%s\n", PLFileName);
-				printf("Playlist Entry:\t%u / %u\n", CurPLFile + 1, PLFileCount);
-				printf("File Name:\t%s\n", PlayListFile[CurPLFile]);
-			}
-			
+			cls();
+			printf(APP_NAME);
+			printf("\n----------\n");
+			printf("\nPlaylist File:\t%s\n", PLFileName);
+			printf("Playlist Entry:\t%u / %u\n", CurPLFile + 1, PLFileCount);
+			printf("File Name:\t%s\n", PlayListFile[CurPLFile]);
+
 			if (IsAbsolutePath(PlayListFile[CurPLFile]))
 			{
 				strcpy(VgmFileName, PlayListFile[CurPLFile]);
@@ -545,9 +618,7 @@ int main(int argc, char* argv[])
 			ShowVGMTag();
 			NextPLCmd = 0x00;
 			PlayVGM_UI();
-			
 			CloseVGMFile();
-			
 			if (ErrorHappened)
 			{
 				if (_kbhit())
@@ -585,6 +656,7 @@ ExitProgram:
 //	printf("\x1B]0;${USER}@${HOSTNAME}: ${PWD/$HOME/~}\x07", APP_NAME);	// Reset xterm/rxvt Terminal Title
 #endif
 #endif
+	MultimediaKeyHook_Deinit();
 	VGMPlay_Deinit();
 	free(AppName);
 	
@@ -622,7 +694,7 @@ static void RemoveQuotationMarks(char* String)
 	return;
 }
 
-static char* GetLastDirSeparator(const char* FilePath)
+char* GetLastDirSeparator(const char* FilePath)
 {
 	char* SepPos1;
 	char* SepPos2;
@@ -651,7 +723,7 @@ static bool IsAbsolutePath(const char* FilePath)
 	return false;
 }
 
-static char* GetFileExtention(const char* FilePath)
+static char* GetFileExtension(const char* FilePath)
 {
 	char* DirSepPos;
 	char* ExtDotPos;
@@ -721,17 +793,12 @@ static void WinNT_Check(void)
 static char* GetAppFileName(void)
 {
 	char* AppPath;
-	int RetVal;
 	
-	AppPath = (char*)malloc(MAX_PATH * sizeof(char));
+	AppPath = calloc(MAX_PATH, sizeof(char));
 #ifdef WIN32
-	RetVal = GetModuleFileName(NULL, AppPath, MAX_PATH);
-	if (! RetVal)
-		AppPath[0] = '\0';
+	GetModuleFileName(NULL, AppPath, MAX_PATH - 1);
 #else
-	RetVal = readlink("/proc/self/exe", AppPath, MAX_PATH);
-	if (RetVal == -1)
-		AppPath[0] = '\0';
+	readlink("/proc/self/exe", AppPath, MAX_PATH - 1);
 #endif
 	
 	return AppPath;
@@ -768,7 +835,9 @@ static void cls(void)
 	// put the cursor at (0, 0)
 	bSuccess = SetConsoleCursorPosition(hConsole, coordScreen);
 #else
-	system("clear");
+	int retVal;
+	
+	retVal = system("clear");
 #endif
 	
 	return;
@@ -940,6 +1009,7 @@ static void ReadOptions(const char* AppName)
 	PauseTimeL = 0;
 	Show95Cmds = 0x00;
 	LogToWave = 0x00;
+	OutputDevID = 0;
 	ForceAudioBuf = 0x00;
 	PreferJapTag = false;
 	
@@ -959,7 +1029,7 @@ static void ReadOptions(const char* AppName)
 	strcpy(FileName, RStr);
 	// FileName: "VGMPlay.exe"
 	
-	RStr = GetFileExtention(FileName);
+	RStr = GetFileExtension(FileName);
 	if (RStr == NULL)
 	{
 		RStr = FileName + strlen(FileName);
@@ -1141,6 +1211,10 @@ static void ReadOptions(const char* AppName)
 				{
 					CHIP_SAMPLE_RATE = strtol(RStr, NULL, 0);
 				}
+				else if (! stricmp_u(LStr, "OutputDevice"))
+				{
+					OutputDevID = (UINT8)strtol(RStr, NULL, 0);
+				}
 				else if (! stricmp_u(LStr, "AudioBuffers"))
 				{
 					ForceAudioBuf = (UINT16)strtol(RStr, NULL, 0);
@@ -1170,6 +1244,10 @@ static void ReadOptions(const char* AppName)
 				else if (! stricmp_u(LStr, "FMVolume"))
 				{
 					FMVol = (float)strtod(RStr, NULL);
+				}
+				else if (! stricmp_u(LStr, "FMOPL2Pan"))
+				{
+					FMOPL2Pan = GetBoolFromStr(RStr);
 				}
 				/*else if (! stricmp_u(LStr, "AccurateFM"))
 				{
@@ -1283,6 +1361,12 @@ static void ReadOptions(const char* AppName)
 							TempFlag = GetBoolFromStr(RStr);
 							TempCOpt->SpecialFlags &= ~(0x01 << 2);
 							TempCOpt->SpecialFlags |= TempFlag << 2;
+						}
+						else if (! stricmp_u(LStr, "NukedType"))
+						{
+							TempLng = (UINT32)strtoul(RStr, NULL, 0) & 0x03;
+							TempCOpt->SpecialFlags &= ~(0x03 << 3);
+							TempCOpt->SpecialFlags |= TempLng << 3;
 						}
 						break;
 					//case 0x03:	// YM2151
@@ -1444,18 +1528,6 @@ static void ReadOptions(const char* AppName)
 							TempFlag = GetBoolFromStr(RStr);
 							TempCOpt->SpecialFlags &= ~(0x01 << 0);
 							TempCOpt->SpecialFlags |= TempFlag << 0;
-						}
-						else if (! stricmp_u(LStr, "LowerNoiseChn"))
-						{
-							TempFlag = GetBoolFromStr(RStr);
-							TempCOpt->SpecialFlags &= ~(0x01 << 1);
-							TempCOpt->SpecialFlags |= TempFlag << 1;
-						}
-						else if (! stricmp_u(LStr, "Inaccurate"))
-						{
-							TempFlag = GetBoolFromStr(RStr);
-							TempCOpt->SpecialFlags &= ~(0x01 << 2);
-							TempCOpt->SpecialFlags |= TempFlag << 2;
 						}
 						break;
 					case 0x14:	// NES
@@ -1656,9 +1728,9 @@ static void ConvertCP1252toUTF8(char** DstStr, const char* SrcStr)
 	UINT32 StrLen;
 	UINT16 UnicodeChr;
 	char* DstPtr;
-	const char* SrcPtr;
+	const unsigned char* SrcPtr;
 	
-	SrcPtr = SrcStr;
+	SrcPtr = (const unsigned char*)SrcStr;
 	StrLen = 0x00;
 	while(*SrcPtr != '\0')
 	{
@@ -1676,7 +1748,7 @@ static void ConvertCP1252toUTF8(char** DstStr, const char* SrcStr)
 	}
 	
 	*DstStr = (char*)malloc((StrLen + 0x01) * sizeof(char));
-	SrcPtr = SrcStr;
+	SrcPtr = (const unsigned char*)SrcStr;
 	DstPtr = *DstStr;
 	while(*SrcPtr != '\0')
 	{
@@ -1913,7 +1985,7 @@ static void PrintChipStr(UINT8 ChipID, UINT8 SubType, UINT32 Clock)
 	return;
 }
 
-static const wchar_t* GetTagStrEJ(const wchar_t* EngTag, const wchar_t* JapTag)
+const wchar_t* GetTagStrEJ(const wchar_t* EngTag, const wchar_t* JapTag)
 {
 	const wchar_t* RetTag;
 	
@@ -2067,6 +2139,12 @@ static void ShowVGMTag(void)
 	return;
 }
 
+static void MMKey_Event(UINT8 event)
+{
+	lastMMEvent = event;
+
+	return;
+}
 
 #define LOG_SAMPLES	(SampleRate / 5)
 static void PlayVGM_UI(void)
@@ -2089,7 +2167,7 @@ static void PlayVGM_UI(void)
 	printf("Initializing ...\r");
 	
 	PlayVGM();
-	
+	DBus_EmitSignal(SIGNAL_SEEK | SIGNAL_METADATA | SIGNAL_PLAYSTATUS | SIGNAL_CONTROLS);
 	/*switch(LogToWave)
 	{
 	case 0x00:
@@ -2148,7 +2226,7 @@ static void PlayVGM_UI(void)
 		if (LogToWave)
 		{
 			strcpy(WavFileName, VgmFileName);
-			TempStr = GetFileExtention(WavFileName);
+			TempStr = GetFileExtension(WavFileName);
 			if (TempStr == NULL)
 				TempStr = WavFileName + strlen(WavFileName);
 			else
@@ -2167,7 +2245,7 @@ static void PlayVGM_UI(void)
 			if (FirstInit || ! StreamStarted)
 			{
 				// support smooth transistions between songs
-				RetVal = StartStream(0x00);
+				RetVal = StartStream(OutputDevID);
 				if (RetVal)
 				{
 					printf("Error openning Sound Device!\n");
@@ -2216,12 +2294,20 @@ static void PlayVGM_UI(void)
 	QuitPlay = false;
 	while(! QuitPlay)
 	{
+		DBus_ReadWriteDispatch();
+		if(sigint)
+		{
+			QuitPlay = true;
+			NextPLCmd = 0xFF;
+		}
+		
 		if (! PausePlay || PosPrint)
 		{
 			PosPrint = false;
 			
 			VGMPbSmplCount = SampleVGM2Playback(VGMHead.lngTotalSamples);
 			PlaySmpl = VGMPos - VGMPlaySt;
+
 #ifdef WIN32
 			printf("Playing %01.2f%%\t", 100.0 * PlaySmpl / VGMPlayEnd);
 #else
@@ -2245,6 +2331,7 @@ static void PlayVGM_UI(void)
 			}
 			else
 			{
+				//printf("%i", VGMSmplPos);
 				while(PlaySmpl < SampleVGM2Playback(VGMHead.lngTotalSamples -
 					VGMHead.lngLoopSamples))
 					PlaySmpl += SampleVGM2Playback(VGMHead.lngLoopSamples);
@@ -2257,12 +2344,13 @@ static void PlayVGM_UI(void)
 			printf(" seconds");
 			if (Show95Cmds && Last95Max != 0xFFFF)
 			{
+				UINT16 drumID = 1 + Last95Drum;	// 0-based -> 1-based, 0xFFFF = 0
 				if (Show95Cmds == 0x01)
-					printf("  %02hX / %02hX", 1 + Last95Drum, Last95Max);
+					printf("  %02hX / %02hX", drumID , Last95Max);
 				else if (Show95Cmds == 0x02)
-					printf("  %02hX / %02hX at %5u Hz", 1 + Last95Drum, Last95Max, Last95Freq);
+					printf("  %02hX / %02hX at %5u Hz", drumID, Last95Max, Last95Freq);
 				else if (Show95Cmds == 0x03)
-					printf("  %02hX / %02hX at %4.1f KHz", 1 + Last95Drum, Last95Max,
+					printf("  %02hX / %02hX at %4.1f KHz", drumID, Last95Max,
 							Last95Freq / 1000.0);
 			}
 			//printf("  %u / %u", multipcm_get_channels(0, NULL), 28);
@@ -2293,10 +2381,10 @@ static void PlayVGM_UI(void)
 #endif
 		}
 #ifndef WIN32
-		if (! PausePlay)
+		if (! PausePlay && PlayingMode != 0x01)
 			WaveOutLinuxCallBack();
 		else
-			Sleep(100);
+			Sleep(50);
 #endif
 		
 		if (EndPlay)
@@ -2317,9 +2405,22 @@ static void PlayVGM_UI(void)
 			if (PlayingTime >= PlayTimeEnd)
 				QuitPlay = true;
 		}
-		if (_kbhit())
-		{
-			KeyCode = _getch();
+		if (_kbhit() || lastMMEvent)
+ 		{
+			if (lastMMEvent)
+			{
+				if (lastMMEvent == MMKEY_PLAY)
+					KeyCode = ' ';
+				else if (lastMMEvent == MMKEY_PREV)
+					KeyCode = 'B';
+				else if (lastMMEvent == MMKEY_NEXT)
+					KeyCode = 'N';
+				lastMMEvent = 0x00;
+			}
+			else
+			{
+				KeyCode = _getch();
+			}
 			if (KeyCode < 0x80)
 				KeyCode = toupper(KeyCode);
 			switch(KeyCode)
@@ -2462,6 +2563,7 @@ static void PlayVGM_UI(void)
 				{
 					SeekVGM(true, PlaySmpl * SampleRate);
 					PosPrint = true;
+					DBus_EmitSignal(SIGNAL_SEEK);
 				}
 				break;
 #ifdef WIN32
@@ -2474,12 +2576,14 @@ static void PlayVGM_UI(void)
 			case ' ':
 				PauseVGM(! PausePlay);
 				PosPrint = true;
+				DBus_EmitSignal(SIGNAL_PLAYSTATUS); // Emit status change signal
 				break;
 			case 'F':	// Fading
 				FadeTime = FadeTimeN;
 				FadePlay = true;
 				break;
 			case 'R':	// Restart
+				DBus_EmitSignal(SIGNAL_SEEK);
 				RestartVGM();
 				PosPrint = true;
 				break;

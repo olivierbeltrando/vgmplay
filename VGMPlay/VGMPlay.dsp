@@ -94,6 +94,14 @@ LINK32=link.exe
 # PROP Default_Filter "cpp;c;cxx;rc;def;r;odl;idl;hpj;bat"
 # Begin Source File
 
+SOURCE=.\dbus_stub.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\mmkeys_Win.c
+# End Source File
+# Begin Source File
+
 SOURCE=.\pt_ioctl.c
 # End Source File
 # Begin Source File
@@ -152,6 +160,14 @@ SOURCE=.\VGMPlayUI.c
 # Begin Group "Header-Dateien"
 
 # PROP Default_Filter "h;hpp;hxx;hm;inl"
+# Begin Source File
+
+SOURCE=.\dbus.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\mmkeys.h
+# End Source File
 # Begin Source File
 
 SOURCE=.\PortTalk_IOCTL.h
@@ -456,6 +472,14 @@ SOURCE=.\chips\ym2612.c
 
 SOURCE=.\chips\ym2612.h
 # End Source File
+# Begin Source File
+
+SOURCE=.\chips\ym3438.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\chips\ym3438.h
+# End Source File
 # End Group
 # Begin Group "FM OPx Chips"
 
@@ -637,11 +661,27 @@ SOURCE=.\chips\pwm.h
 # End Source File
 # Begin Source File
 
-SOURCE=.\chips\qsound.c
+SOURCE=.\chips\qsound_ctr.c
 # End Source File
 # Begin Source File
 
-SOURCE=.\chips\qsound.h
+SOURCE=.\chips\qsound_ctr.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\chips\qsound_intf.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\chips\qsound_intf.h
+# End Source File
+# Begin Source File
+
+SOURCE=.\chips\qsound_mame.c
+# End Source File
+# Begin Source File
+
+SOURCE=.\chips\qsound_mame.h
 # End Source File
 # Begin Source File
 

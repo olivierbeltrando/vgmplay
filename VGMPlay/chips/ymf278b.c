@@ -167,10 +167,10 @@ char* FindFile(const char* FileName);	// from VGMPlay_Intf.h/VGMPlay.c
 #define EG_TIMER_OVERFLOW	(1 << EG_SH)
 
 // envelope output entries
-#define ENV_BITS	10
+#define ENV_BITS	11	// -VB
 #define ENV_LEN		(1 << ENV_BITS)
 #define ENV_STEP	(128.0 / ENV_LEN)
-#define MAX_ATT_INDEX	((1 << (ENV_BITS - 1)) - 1)	// 511
+#define MAX_ATT_INDEX	511
 #define MIN_ATT_INDEX	0
 
 // Envelope Generator phases
@@ -337,7 +337,12 @@ INLINE int ymf278b_slot_compute_rate(YMF278BSlot* slot, int val)
 		{
 			oct |= -8;
 		}
-		res = (oct + slot->RC) * 2 + (slot->FN & 0x200 ? 1 : 0) + val * 4;
+		res = (oct + slot->RC);
+		if (res < 0)
+			res = 0;
+		else if (res > 15)
+			res = 15;
+		res = res * 2 + ((slot->FN & 0x200) ? 1 : 0) + val * 4;
 	}
 	else
 	{
@@ -419,7 +424,7 @@ INLINE void ymf278b_advance(YMF278BChip* chip)
 			if (! (chip->eg_cnt & ((1 << shift) - 1)))
 			{
 				select = eg_rate_select[rate];
-				op->env_vol += (~op->env_vol * eg_inc[select + ((chip->eg_cnt >> shift) & 7)]) >> 3;
+				op->env_vol += (~op->env_vol * eg_inc[select + ((chip->eg_cnt >> shift) & 7)]) >> 4;	// -VB
 				if (op->env_vol <= MIN_ATT_INDEX)
 				{
 					op->env_vol = MIN_ATT_INDEX;
@@ -639,7 +644,7 @@ void ymf278b_pcm_update(UINT8 ChipID, stream_sample_t** outputs, int samples)
 		vl = mix_level[chip->fm_l] - 8;	vl = chip->volume[vl];
 		vr = mix_level[chip->fm_r] - 8;	vr = chip->volume[vr];
 		// make FM softer by 3 db
-		vl = (vl * 0xB5) >> 8;	vr = (vr * 0xB5) >> 8;
+		vl = (vl * 0x16A) >> 8;	vr = (vr * 0x16A) >> 8;
 		for (j = 0; j < samples; j ++)
 		{
 			outputs[0][j] = (outputs[0][j] * vl) >> 15;
@@ -713,16 +718,15 @@ void ymf278b_pcm_update(UINT8 ChipID, stream_sample_t** outputs, int samples)
 			else
 				sl->stepptr += sl->step;
 
-			while (sl->stepptr >= 0x10000)
+			if (sl->stepptr >= 0x10000)
 			{
-				sl->stepptr -= 0x10000;
 				sl->sample1 = sl->sample2;
 				
 				sl->sample2 = ymf278b_getSample(chip, sl);
-				if (sl->pos >= sl->endaddr)
-					sl->pos = sl->pos - sl->endaddr + sl->loopaddr;
-				else
-					sl->pos ++;
+				sl->pos += (sl->stepptr >> 16);
+				sl->stepptr &= 0xFFFF;
+				if (sl->pos > sl->endaddr)
+					sl->pos = sl->pos - sl->endaddr + sl->loopaddr - 1;
 			}
 		}
 		ymf278b_advance(chip);
@@ -1141,11 +1145,11 @@ static void ymf278b_load_rom(YMF278BChip *chip)
 			RetVal = fread(ROMFile, 0x01, ROMFileSize, hFile);
 			fclose(hFile);
 			if (RetVal != ROMFileSize)
-				printf("Error while reading OPL4 Sample ROM (%s)!\n", ROM_FILENAME);
+				fprintf(stderr, "Error while reading OPL4 Sample ROM (%s)!\n", ROM_FILENAME);
 		}
 		else
 		{
-			printf("Warning! OPL4 Sample ROM (%s) not found!\n", ROM_FILENAME);
+			fprintf(stderr, "Warning! OPL4 Sample ROM (%s) not found!\n", ROM_FILENAME);
 		}
 	}
 	
@@ -1206,7 +1210,11 @@ int device_start_ymf278b(UINT8 ChipID, int clock)
 
 	// Volume table, 1 = -0.375dB, 8 = -3dB, 256 = -96dB
 	for (i = 0; i < 256; i ++)
-		chip->volume[i] = 32768 * pow(2.0, (-0.375 / 6) * i);
+	{
+		int vol_mul = 0x20 - (i & 0x0F);	// 0x10 values per 6 db
+		int vol_shift = 5 + (i >> 4);		// approximation: -6 dB == divide by two (shift right)
+		chip->volume[i] = (0x8000 * vol_mul) >> vol_shift;
+	}
 	for (i = 256; i < 256 * 4; i ++)
 		chip->volume[i] = 0;
 	for (i = 0; i < 24; i ++)
@@ -1222,6 +1230,7 @@ void device_stop_ymf278b(UINT8 ChipID)
 	
 	ymf262_shutdown(chip->fmchip);
 	free(chip->rom);	chip->rom = NULL;
+	free(chip->ram);	chip->ram = NULL;
 	
 	return;
 }
@@ -1265,6 +1274,20 @@ void ymf278b_write_rom(UINT8 ChipID, offs_t ROMSize, offs_t DataStart, offs_t Da
 		DataLength = ROMSize - DataStart;
 	
 	memcpy(chip->rom + DataStart, ROMData, DataLength);
+	
+	return;
+}
+
+void ymf278b_write_ram(UINT8 ChipID, offs_t DataStart, offs_t DataLength, const UINT8* RAMData)
+{
+	YMF278BChip *chip = &YMF278BData[ChipID];
+	
+	if (DataStart >= chip->RAMSize)
+		return;
+	if (DataStart + DataLength > chip->RAMSize)
+		DataLength = chip->RAMSize - DataStart;
+	
+	memcpy(chip->ram + DataStart, RAMData, DataLength);
 	
 	return;
 }
